@@ -8,12 +8,19 @@ return {
     -- {"3rd/image.nvim", opts = {}}, -- Optional image support in preview window
   },
   lazy = false,
-  opts = {},
+  opts = {
+    filesystem = {
+      follow_current_file = {
+        enabled = true,
+        leave_dirs_open = false, -- optional: close folders not related to current file
+      },
+      hijack_netrw_behavior = "open_default",
+      use_libuv_file_watcher = true, -- enables real-time updates
+    },
+  },
   config = function()
     vim.keymap.set("n", "<C-b>", function()
-      -- Toggles Neo-tree
-      vim.cmd("Neotree toggle left")
-    end, { desc = "Toggle Neo-tree" })
+      vim.cmd("Neotree toggle left reveal") -- reveal ensures file is shown + folders opened
+    end, { desc = "Toggle Neo-tree and reveal current file" })
   end,
 }
-
