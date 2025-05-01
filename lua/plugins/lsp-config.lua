@@ -22,21 +22,13 @@ return {
 
       -- Helper: format on save + keymaps
       local on_attach = function(client, bufnr)
-        -- Format on save
-
-        -- Format on save using null-ls and prettierd
-        -- if client.server_capabilities.documentFormattingProvider then
-        --  vim.api.nvim_create_autocmd("BufWritePre", {
-        --    buffer = bufnr,
-        --    callback = function()
-        --      vim.lsp.buf.format({ async = false })
-        --    end,
-        --  })
-        -- end
+        local opts = { buffer = bufnr, desc = "" }
 
         -- LSP Keymaps
-        local opts = { buffer = bufnr, desc = "" }
         vim.keymap.set("n", "K", vim.lsp.buf.hover, vim.tbl_extend("force", opts, { desc = "Hover doc" }))
+        vim.keymap.set("n", "gl", function()
+          vim.diagnostic.open_float(nil, { focusable = false })
+        end, vim.tbl_extend("force", opts, { desc = "Show line diagnostics" }))
         vim.keymap.set(
           "n",
           "<leader>gd",
@@ -56,11 +48,33 @@ return {
           vim.tbl_extend("force", opts, { desc = "Code action" })
         )
 
-        -- 🔁 Rename with save
         vim.keymap.set("n", "<leader>rn", function()
-          vim.lsp.buf.rename()
-          vim.cmd("write")
-        end, vim.tbl_extend("force", opts, { desc = "Rename symbol + save" }))
+          local curr_name = vim.fn.expand("<cword>")
+          vim.ui.input({ prompt = "Rename to: ", default = curr_name }, function(new_name)
+            if not new_name or #new_name == 0 or new_name == curr_name then
+              return
+            end
+
+            local params = vim.lsp.util.make_position_params()
+            params.newName = new_name
+
+            vim.lsp.buf_request(0, "textDocument/rename", params, function(err, result, ctx, _)
+              if err then
+                vim.notify("Rename failed: " .. err.message, vim.log.levels.ERROR)
+                return
+              end
+
+              -- Apply edits
+              if result and result.changes then
+                vim.lsp.util.apply_workspace_edit(result, "utf-8")
+                vim.cmd("write")
+                vim.notify("Renamed to '" .. new_name .. "' and saved", vim.log.levels.INFO)
+              else
+                vim.notify("Rename returned no changes", vim.log.levels.WARN)
+              end
+            end)
+          end)
+        end, { desc = "LSP rename + save when done" })
       end
 
       -- Setup LSP servers
@@ -90,12 +104,9 @@ return {
         on_attach = on_attach,
       })
 
-      -- Diagnostics config: inline + signs
+      -- Diagnostics config: no virtual text + signs
       vim.diagnostic.config({
-        virtual_text = {
-          prefix = "●",
-          spacing = 2,
-        },
+        virtual_text = false, -- No inline text, errors in popup only
         signs = true,
         underline = true,
         update_in_insert = false,
@@ -103,7 +114,7 @@ return {
       })
 
       -- Optional: define icons in gutter
-      local signs = { Error = " ", Warn = " ", Hint = " ", Info = " " }
+      local signs = { Error = " ", Warn = " ", Hint = " ", Info = " " }
       for type, icon in pairs(signs) do
         local hl = "DiagnosticSign" .. type
         vim.fn.sign_define(hl, { text = icon, texthl = hl, numhl = hl })
