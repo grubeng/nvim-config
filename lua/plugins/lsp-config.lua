@@ -50,31 +50,111 @@ return {
 
         vim.keymap.set("n", "<leader>rn", function()
           local curr_name = vim.fn.expand("<cword>")
+
           vim.ui.input({ prompt = "Rename to: ", default = curr_name }, function(new_name)
             if not new_name or #new_name == 0 or new_name == curr_name then
               return
             end
 
-            local params = vim.lsp.util.make_position_params()
+            -- Pick ONE client that supports rename (avoids multi-client encoding weirdness)
+            local clients = vim.lsp.get_clients({ bufnr = 0, method = "textDocument/rename" })
+            local client = clients[1]
+            if not client then
+              vim.notify("No LSP client attached that supports rename", vim.log.levels.WARN)
+              return
+            end
+
+            local enc = client.offset_encoding or "utf-16"
+
+            local function collect_uris(edit)
+              local uris = {}
+
+              if edit and edit.changes then
+                for uri, _ in pairs(edit.changes) do
+                  uris[uri] = true
+                end
+              end
+
+              if edit and edit.documentChanges then
+                for _, dc in ipairs(edit.documentChanges) do
+                  -- TextDocumentEdit
+                  if dc.textDocument and dc.textDocument.uri then
+                    uris[dc.textDocument.uri] = true
+                  end
+                  -- Resource operations (rename/create/delete)
+                  if dc.kind == "rename" then
+                    if dc.oldUri then
+                      uris[dc.oldUri] = true
+                    end
+                    if dc.newUri then
+                      uris[dc.newUri] = true
+                    end
+                  elseif dc.kind == "create" or dc.kind == "delete" then
+                    if dc.uri then
+                      uris[dc.uri] = true
+                    end
+                  end
+                end
+              end
+
+              local out = {}
+              for uri, _ in pairs(uris) do
+                table.insert(out, uri)
+              end
+              return out
+            end
+
+            local function save_affected_buffers(uris)
+              local saved = 0
+
+              for _, uri in ipairs(uris) do
+                local bufnr = vim.uri_to_bufnr(uri)
+                if bufnr and bufnr ~= 0 then
+                  -- Load if needed (apply_workspace_edit may touch unloaded files)
+                  pcall(vim.fn.bufload, bufnr)
+
+                  -- Only write "real" file buffers
+                  if vim.bo[bufnr].buftype == "" and vim.api.nvim_buf_get_name(bufnr) ~= "" then
+                    -- :update writes only if modified (safer than :write)
+                    local ok = pcall(vim.api.nvim_buf_call, bufnr, function()
+                      vim.cmd("silent! update")
+                    end)
+                    if ok then
+                      saved = saved + 1
+                    end
+                  end
+                end
+              end
+
+              return saved
+            end
+
+            local params = vim.lsp.util.make_position_params(0, enc)
             params.newName = new_name
 
-            vim.lsp.buf_request(0, "textDocument/rename", params, function(err, result, ctx, _)
+            client.request("textDocument/rename", params, function(err, result, ctx)
               if err then
-                vim.notify("Rename failed: " .. err.message, vim.log.levels.ERROR)
+                vim.notify("Rename failed: " .. (err.message or tostring(err)), vim.log.levels.ERROR)
                 return
               end
 
-              -- Apply edits
-              if result and result.changes then
-                vim.lsp.util.apply_workspace_edit(result, "utf-8")
-                vim.cmd("write")
-                vim.notify("Renamed to '" .. new_name .. "' and saved", vim.log.levels.INFO)
-              else
-                vim.notify("Rename returned no changes", vim.log.levels.WARN)
+              if not result then
+                vim.notify("Rename returned no result", vim.log.levels.WARN)
+                return
               end
-            end)
+
+              local uris = collect_uris(result)
+
+              -- Apply edits
+              vim.lsp.util.apply_workspace_edit(result, enc)
+
+              -- Save all affected buffers
+              local saved = save_affected_buffers(uris)
+
+              vim.notify(("Renamed to '%s' and saved %d buffer(s)"):format(new_name, saved), vim.log.levels.INFO)
+            end, 0)
           end)
-        end, { desc = "LSP rename + save when done" })
+        end, { desc = "LSP rename + save all affected buffers" })
       end
 
       -- Setup LSP servers
